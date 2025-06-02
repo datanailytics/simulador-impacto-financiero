@@ -5,7 +5,7 @@ Este módulo contiene la clase FinancialModel que implementa la lógica central
 para evaluar el impacto financiero de decisiones estratégicas mediante
 análisis de flujo de caja descontado y métricas financieras estándar.
 
-Autor: [Tu Nombre]
+Autor: [Naiara Rodríguez Solano]
 Fecha: Mayo 2025
 Versión: 1.0.0
 """
