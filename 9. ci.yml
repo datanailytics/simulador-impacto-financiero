@@ -1,0 +1,327 @@
+name: Continuous Integration and Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Ejecutar pruebas semanalmente los lunes a las 6:00 AM UTC
+    - cron: '0 6 * * 1'
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  # Job de validación de estructura y sintaxis
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install development dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black isort mypy bandit safety
+        pip install -r requirements.txt
+    
+    - name: Run code formatting check (Black)
+      run: |
+        black --check --diff src/ tests/ examples/
+    
+    - name: Run import sorting check (isort)
+      run: |
+        isort --check-only --diff src/ tests/ examples/
+    
+    - name: Run linting (Flake8)
+      run: |
+        flake8 src/ tests/ examples/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 src/ tests/ examples/ --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+    
+    - name: Run type checking (MyPy)
+      run: |
+        mypy src/ --ignore-missing-imports --no-strict-optional
+    
+    - name: Run security analysis (Bandit)
+      run: |
+        bandit -r src/ -f json -o bandit-report.json
+    
+    - name: Check dependencies for security vulnerabilities (Safety)
+      run: |
+        safety check --json --output safety-report.json
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+
+  # Job de pruebas unitarias en múltiples versiones de Python
+  unit-tests:
+    name: Unit Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov pytest-mock pytest-benchmark
+        pip install -r requirements.txt
+    
+    - name: Create test configuration
+      run: |
+        mkdir -p config
+        echo '{"simulation_parameters": {"discount_rate": 0.10, "tax_rate": 0.25}}' > config/financial_parameters.json
+    
+    - name: Run unit tests with coverage
+      run: |
+        pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-report=term-missing
+    
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v3
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+    
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v3
+      if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+      with:
+        name: coverage-report
+        path: htmlcov/
+
+  # Job de pruebas de integración y rendimiento
+  integration-tests:
+    name: Integration and Performance Tests
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-benchmark memory-profiler
+        pip install -r requirements.txt
+    
+    - name: Set up test environment
+      run: |
+        mkdir -p data/examples config reports
+        echo '{"simulation_parameters": {"discount_rate": 0.10, "tax_rate": 0.25, "inflation_rate": 0.03}, "risk_parameters": {"market_volatility": 0.15}}' > config/financial_parameters.json
+    
+    - name: Run integration tests
+      run: |
+        python examples/basic_simulation.py
+    
+    - name: Run performance benchmarks
+      run: |
+        pytest tests/ -k "benchmark" --benchmark-only --benchmark-json=benchmark-results.json
+    
+    - name: Memory profiling
+      run: |
+        python -m memory_profiler examples/basic_simulation.py > memory-profile.txt
+    
+    - name: Upload performance artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-reports
+        path: |
+          benchmark-results.json
+          memory-profile.txt
+
+  # Job de validación de documentación
+  documentation-validation:
+    name: Documentation Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install documentation dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install sphinx sphinx-rtd-theme nbsphinx jupyter
+        pip install -r requirements.txt
+    
+    - name: Validate Jupyter notebooks
+      run: |
+        jupyter nbconvert --to notebook --execute notebooks/*.ipynb --output-dir=validated_notebooks/
+    
+    - name: Build documentation
+      run: |
+        cd docs
+        make html SPHINXOPTS="-W"
+    
+    - name: Check documentation links
+      run: |
+        cd docs
+        make linkcheck
+    
+    - name: Upload documentation artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: documentation-build
+        path: docs/_build/html/
+
+  # Job de análisis de dependencias
+  dependency-analysis:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install pip-tools
+      run: |
+        python -m pip install --upgrade pip pip-tools
+    
+    - name: Generate dependency lock file
+      run: |
+        pip-compile requirements.txt --output-file requirements.lock
+    
+    - name: Check for dependency updates
+      run: |
+        pip-compile --upgrade requirements.txt --output-file requirements-updated.txt
+        diff requirements.lock requirements-updated.txt || echo "Dependencies can be updated"
+    
+    - name: Upload dependency analysis
+      uses: actions/upload-artifact@v3
+      with:
+        name: dependency-analysis
+        path: |
+          requirements.lock
+          requirements-updated.txt
+
+  # Job de construcción y validación web
+  web-build:
+    name: Web Interface Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: web/package-lock.json
+    
+    - name: Install web dependencies
+      run: |
+        cd web
+        npm ci
+    
+    - name: Run web linting
+      run: |
+        cd web
+        npm run lint
+    
+    - name: Build web interface
+      run: |
+        cd web
+        npm run build
+    
+    - name: Run web tests
+      run: |
+        cd web
+        npm test
+    
+    - name: Upload web build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: web-build
+        path: web/dist/
+
+  # Job de notificación de resultados
+  notification:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests, integration-tests, documentation-validation, dependency-analysis, web-build]
+    if: always()
+    
+    steps:
+    - name: Determine overall status
+      id: status
+      run: |
+        if [[ "${{ needs.code-quality.result }}" == "success" && 
+              "${{ needs.unit-tests.result }}" == "success" && 
+              "${{ needs.integration-tests.result }}" == "success" && 
+              "${{ needs.documentation-validation.result }}" == "success" && 
+              "${{ needs.dependency-analysis.result }}" == "success" && 
+              "${{ needs.web-build.result }}" == "success" ]]; then
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "message=All CI checks passed successfully" >> $GITHUB_OUTPUT
+        else
+          echo "status=failure" >> $GITHUB_OUTPUT
+          echo "message=One or more CI checks failed" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Create summary report
+      run: |
+        echo "## CI/CD Pipeline Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Code Quality | ${{ needs.code-quality.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Integration Tests | ${{ needs.integration-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Documentation | ${{ needs.documentation-validation.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Dependencies | ${{ needs.dependency-analysis.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Web Build | ${{ needs.web-build.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Overall Status:** ${{ steps.status.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Message:** ${{ steps.status.outputs.message }}" >> $GITHUB_STEP_SUMMARY

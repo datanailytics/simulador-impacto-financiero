@@ -1,0 +1,401 @@
+name: Automated Release Management
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Type of version bump'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+        - patch
+        - minor
+        - major
+      pre_release:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Job de validación pre-release
+  pre-release-validation:
+    name: Pre-Release Validation
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install semantic-version gitpython
+        pip install -r requirements.txt
+    
+    - name: Determine version
+      id: version
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          # Calculamos la siguiente versión basada en el input
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          python << EOF
+        import semantic_version
+        import os
+        
+        latest = semantic_version.Version("${LATEST_TAG#v}")
+        version_type = "${{ github.event.inputs.version_type }}"
+        
+        if version_type == "major":
+            new_version = latest.next_major()
+        elif version_type == "minor":
+            new_version = latest.next_minor()
+        else:
+            new_version = latest.next_patch()
+        
+        is_prerelease = "${{ github.event.inputs.pre_release }}" == "true"
+        
+        if is_prerelease:
+            new_version = semantic_version.Version(f"{new_version}-rc.1")
+        
+        print(f"version=v{new_version}")
+        print(f"is_prerelease={str(is_prerelease).lower()}")
+        
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f"version=v{new_version}\n")
+            f.write(f"is_prerelease={str(is_prerelease).lower()}\n")
+        EOF
+        else
+          # Usamos el tag existente
+          echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${{ contains(github.ref_name, 'rc') }}" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Run comprehensive tests
+      run: |
+        pytest tests/ -v --cov=src --cov-fail-under=80
+    
+    - name: Validate documentation
+      run: |
+        cd docs
+        sphinx-build -b html . _build/html -W
+    
+    - name: Security scan
+      run: |
+        bandit -r src/ -f json -o bandit-report.json
+        safety check
+
+  # Job de construcción de artefactos de release
+  build-release-artifacts:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    needs: pre-release-validation
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build wheel setuptools
+        pip install -r requirements.txt
+    
+    - name: Create package metadata
+      run: |
+        cat > setup.py << 'EOF'
+        from setuptools import setup, find_packages
+        
+        with open("README.md", "r", encoding="utf-8") as fh:
+            long_description = fh.read()
+        
+        with open("requirements.txt", "r", encoding="utf-8") as fh:
+            requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+        
+        setup(
+            name="simulador-impacto-financiero",
+            version="${{ needs.pre-release-validation.outputs.version }}".replace("v", ""),
+            author="Equipo de Análisis Financiero",
+            author_email="contacto@ejemplo.com",
+            description="Simulador Predictivo de Impacto Financiero para Decisiones Estratégicas",
+            long_description=long_description,
+            long_description_content_type="text/markdown",
+            url="https://github.com/tu-usuario/simulador-impacto-financiero",
+            packages=find_packages(where="src"),
+            package_dir={"": "src"},
+            classifiers=[
+                "Development Status :: 4 - Beta",
+                "Intended Audience :: Financial and Insurance Industry",
+                "License :: OSI Approved :: MIT License",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3.8",
+                "Programming Language :: Python :: 3.9",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Topic :: Office/Business :: Financial",
+                "Topic :: Scientific/Engineering :: Mathematics",
+            ],
+            python_requires=">=3.8",
+            install_requires=requirements,
+            extras_require={
+                "dev": ["pytest", "pytest-cov", "black", "flake8", "mypy"],
+                "docs": ["sphinx", "sphinx-rtd-theme", "nbsphinx"],
+                "web": ["flask", "plotly", "dash"]
+            },
+            entry_points={
+                "console_scripts": [
+                    "simulador-financiero=core.financial_model:main",
+                ],
+            },
+            include_package_data=True,
+            package_data={
+                "": ["*.json", "*.yml", "*.yaml", "*.md"],
+            },
+        )
+        EOF
+    
+    - name: Build Python package
+      run: |
+        python -m build
+    
+    - name: Generate standalone executable
+      run: |
+        pip install pyinstaller
+        pyinstaller --onefile --name simulador-financiero examples/basic_simulation.py
+    
+    - name: Create source archive
+      run: |
+        git archive --format=zip --prefix=simulador-impacto-financiero-${{ needs.pre-release-validation.outputs.version }}/ HEAD > source-code.zip
+    
+    - name: Generate checksums
+      run: |
+        sha256sum dist/* > dist/checksums.txt
+        sha256sum source-code.zip >> dist/checksums.txt
+        sha256sum dist/simulador-financiero >> dist/checksums.txt
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-artifacts
+        path: |
+          dist/
+          source-code.zip
+
+  # Job de generación de changelog
+  generate-changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    needs: pre-release-validation
+    
+    outputs:
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Obtener el tag anterior
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        if [[ -z "$PREVIOUS_TAG" ]]; then
+          COMMIT_RANGE="HEAD"
+        else
+          COMMIT_RANGE="${PREVIOUS_TAG}..HEAD"
+        fi
+        
+        # Generar changelog automático
+        cat > changelog.md << 'EOF'
+        ## Cambios en ${{ needs.pre-release-validation.outputs.version }}
+        
+        ### Nuevas Características
+        EOF
+        
+        git log $COMMIT_RANGE --pretty=format:"- %s" --grep="feat:" --grep="add:" >> changelog.md
+        
+        echo "" >> changelog.md
+        echo "### Correcciones de Errores" >> changelog.md
+        git log $COMMIT_RANGE --pretty=format:"- %s" --grep="fix:" --grep="bug:" >> changelog.md
+        
+        echo "" >> changelog.md
+        echo "### Mejoras" >> changelog.md
+        git log $COMMIT_RANGE --pretty=format:"- %s" --grep="improve:" --grep="enhance:" >> changelog.md
+        
+        echo "" >> changelog.md
+        echo "### Documentación" >> changelog.md
+        git log $COMMIT_RANGE --pretty=format:"- %s" --grep="docs:" >> changelog.md
+        
+        echo "" >> changelog.md
+        echo "### Otros Cambios" >> changelog.md
+        git log $COMMIT_RANGE --pretty=format:"- %s" --invert-grep --grep="feat:" --grep="fix:" --grep="docs:" --grep="improve:" >> changelog.md
+        
+        # Leer changelog para output
+        CHANGELOG_CONTENT=$(cat changelog.md)
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Upload changelog
+      uses: actions/upload-artifact@v3
+      with:
+        name: changelog
+        path: changelog.md
+
+  # Job de creación del release
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [pre-release-validation, build-release-artifacts, generate-changelog]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+    
+    - name: Create or update tag
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a ${{ needs.pre-release-validation.outputs.version }} -m "Release ${{ needs.pre-release-validation.outputs.version }}"
+        git push origin ${{ needs.pre-release-validation.outputs.version }}
+    
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ needs.pre-release-validation.outputs.version }}
+        release_name: Release ${{ needs.pre-release-validation.outputs.version }}
+        body: ${{ needs.generate-changelog.outputs.changelog }}
+        draft: false
+        prerelease: ${{ needs.pre-release-validation.outputs.is_prerelease }}
+    
+    - name: Upload Python package
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-artifacts/simulador_impacto_financiero-${{ needs.pre-release-validation.outputs.version }}.tar.gz
+        asset_name: simulador-impacto-financiero-${{ needs.pre-release-validation.outputs.version }}.tar.gz
+        asset_content_type: application/gzip
+    
+    - name: Upload standalone executable
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-artifacts/simulador-financiero
+        asset_name: simulador-financiero-${{ needs.pre-release-validation.outputs.version }}-linux
+        asset_content_type: application/octet-stream
+    
+    - name: Upload source code
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-artifacts/source-code.zip
+        asset_name: source-code-${{ needs.pre-release-validation.outputs.version }}.zip
+        asset_content_type: application/zip
+    
+    - name: Upload checksums
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-artifacts/checksums.txt
+        asset_name: checksums.txt
+        asset_content_type: text/plain
+
+  # Job de notificación y actualizaciones post-release
+  post-release:
+    name: Post-Release Tasks
+    runs-on: ubuntu-latest
+    needs: [pre-release-validation, create-release]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Update version in files
+      run: |
+        # Actualizar version en archivos de configuración
+        VERSION_NUMBER="${{ needs.pre-release-validation.outputs.version }}"
+        VERSION_NUMBER="${VERSION_NUMBER#v}"
+        
+        # Actualizar README.md
+        sed -i "s/\*\*Versión actual\*\*: .*/\*\*Versión actual\*\*: ${VERSION_NUMBER}/" README.md
+        
+        # Actualizar configuración
+        python << EOF
+        import json
+        with open('config/financial_parameters.json', 'r') as f:
+            config = json.load(f)
+        config['version'] = '${VERSION_NUMBER}'
+        config['release_date'] = '$(date -I)'
+        with open('config/financial_parameters.json', 'w') as f:
+            json.dump(config, f, indent=2)
+        EOF
+    
+    - name: Commit version updates
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add README.md config/financial_parameters.json
+        git commit -m "Update version to ${{ needs.pre-release-validation.outputs.version }} [skip ci]" || exit 0
+        git push
+    
+    - name: Create release summary
+      run: |
+        echo "## Release ${{ needs.pre-release-validation.outputs.version }} Created Successfully! 🎉" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Release Type:** ${{ needs.pre-release-validation.outputs.is_prerelease == 'true' && 'Pre-release' || 'Stable Release' }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Version:** ${{ needs.pre-release-validation.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Release URL:** https://github.com/${{ github.repository }}/releases/tag/${{ needs.pre-release-validation.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Release Assets:" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Python Package" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Standalone Executable" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Source Code Archive" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Checksums File" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,700 @@
+# Workflow para notificaciones automáticas
+# .github/workflows/notifications.yml
+
+name: "Automated Notifications and Webhooks"
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+    types: [opened, closed, reopened, synchronize]
+  issues:
+    types: [opened, closed, reopened]
+  release:
+    types: [published, prereleased]
+  workflow_run:
+    workflows: ["Continuous Integration and Testing", "Build and Deploy to GitHub Pages"]
+    types: [completed]
+
+env:
+  PROJECT_NAME: "Simulador Predictivo de Impacto Financiero"
+
+jobs:
+  # Job para notificaciones de CI/CD
+  ci-notifications:
+    name: CI/CD Status Notifications
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+    
+    steps:
+    - name: Determine workflow status
+      id: workflow_status
+      run: |
+        if [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]]; then
+          echo "status=✅ Exitoso" >> $GITHUB_OUTPUT
+          echo "color=good" >> $GITHUB_OUTPUT
+        elif [[ "${{ github.event.workflow_run.conclusion }}" == "failure" ]]; then
+          echo "status=❌ Fallido" >> $GITHUB_OUTPUT
+          echo "color=danger" >> $GITHUB_OUTPUT
+        else
+          echo "status=⚠️ ${{ github.event.workflow_run.conclusion }}" >> $GITHUB_OUTPUT
+          echo "color=warning" >> $GITHUB_OUTPUT
+        fi
+        
+        echo "workflow_name=${{ github.event.workflow_run.name }}" >> $GITHUB_OUTPUT
+        echo "run_url=${{ github.event.workflow_run.html_url }}" >> $GITHUB_OUTPUT
+    
+    - name: Send Slack notification
+      if: env.SLACK_WEBHOOK_URL != ''
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        custom_payload: |
+          {
+            "channel": "#development",
+            "username": "GitHub Actions",
+            "icon_emoji": ":github:",
+            "attachments": [
+              {
+                "color": "${{ steps.workflow_status.outputs.color }}",
+                "title": "${{ env.PROJECT_NAME }} - ${{ steps.workflow_status.outputs.workflow_name }}",
+                "title_link": "${{ steps.workflow_status.outputs.run_url }}",
+                "fields": [
+                  {
+                    "title": "Estado",
+                    "value": "${{ steps.workflow_status.outputs.status }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Rama",
+                    "value": "${{ github.event.workflow_run.head_branch }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Commit",
+                    "value": "<${{ github.event.workflow_run.html_url }}|${{ github.event.workflow_run.head_sha }}>",
+                    "short": true
+                  },
+                  {
+                    "title": "Actor",
+                    "value": "${{ github.event.workflow_run.actor.login }}",
+                    "short": true
+                  }
+                ],
+                "footer": "GitHub Actions",
+                "ts": ${{ github.event.workflow_run.updated_at }}
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    
+    - name: Send Discord notification
+      if: env.DISCORD_WEBHOOK_URL != ''
+      uses: Ilshidur/action-discord@master
+      with:
+        args: |
+          **${{ env.PROJECT_NAME }}** - ${{ steps.workflow_status.outputs.workflow_name }}
+          
+          ${{ steps.workflow_status.outputs.status }}
+          
+          **Rama:** ${{ github.event.workflow_run.head_branch }}
+          **Commit:** `${{ github.event.workflow_run.head_sha }}`
+          **Actor:** ${{ github.event.workflow_run.actor.login }}
+          
+          [Ver detalles](${{ steps.workflow_status.outputs.run_url }})
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+  # Job para notificaciones de releases
+  release-notifications:
+    name: Release Notifications
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    
+    steps:
+    - name: Prepare release information
+      id: release_info
+      run: |
+        echo "tag_name=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        echo "release_name=${{ github.event.release.name }}" >> $GITHUB_OUTPUT
+        echo "release_url=${{ github.event.release.html_url }}" >> $GITHUB_OUTPUT
+        echo "is_prerelease=${{ github.event.release.prerelease }}" >> $GITHUB_OUTPUT
+        
+        if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
+          echo "release_type=Pre-release" >> $GITHUB_OUTPUT
+          echo "emoji=🚧" >> $GITHUB_OUTPUT
+        else
+          echo "release_type=Release Estable" >> $GITHUB_OUTPUT
+          echo "emoji=🚀" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Send release notification to Slack
+      if: env.SLACK_WEBHOOK_URL != ''
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        custom_payload: |
+          {
+            "channel": "#releases",
+            "username": "GitHub Releases",
+            "icon_emoji": ":rocket:",
+            "attachments": [
+              {
+                "color": "${{ steps.release_info.outputs.is_prerelease == 'true' && 'warning' || 'good' }}",
+                "title": "${{ steps.release_info.outputs.emoji }} ${{ env.PROJECT_NAME }} ${{ steps.release_info.outputs.tag_name }}",
+                "title_link": "${{ steps.release_info.outputs.release_url }}",
+                "text": "${{ github.event.release.body }}",
+                "fields": [
+                  {
+                    "title": "Tipo",
+                    "value": "${{ steps.release_info.outputs.release_type }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Autor",
+                    "value": "${{ github.event.release.author.login }}",
+                    "short": true
+                  }
+                ],
+                "footer": "GitHub Releases",
+                "ts": "${{ github.event.release.published_at }}"
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    
+    - name: Send email notification
+      if: env.SENDGRID_API_KEY != ''
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.sendgrid.net
+        server_port: 587
+        username: apikey
+        password: ${{ secrets.SENDGRID_API_KEY }}
+        subject: "${{ steps.release_info.outputs.emoji }} Nueva versión disponible: ${{ env.PROJECT_NAME }} ${{ steps.release_info.outputs.tag_name }}"
+        to: ${{ secrets.NOTIFICATION_EMAIL }}
+        from: "noreply@github.com"
+        html_body: |
+          <h2>${{ steps.release_info.outputs.emoji }} ${{ env.PROJECT_NAME }} ${{ steps.release_info.outputs.tag_name }}</h2>
+          
+          <p><strong>Tipo:</strong> ${{ steps.release_info.outputs.release_type }}</p>
+          <p><strong>Autor:</strong> ${{ github.event.release.author.login }}</p>
+          
+          <h3>Notas de la versión:</h3>
+          <div style="background-color: #f6f8fa; padding: 10px; border-radius: 5px;">
+            ${{ github.event.release.body }}
+          </div>
+          
+          <p><a href="${{ steps.release_info.outputs.release_url }}" style="background-color: #0366d6; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px;">Ver Release Completo</a></p>
+          
+          <hr>
+          <p><small>Este email fue enviado automáticamente por GitHub Actions.</small></p>
+
+  # Job para notificaciones de issues
+  issue-notifications:
+    name: Issue Notifications
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues'
+    
+    steps:
+    - name: Prepare issue information
+      id: issue_info
+      run: |
+        echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+        echo "issue_title=${{ github.event.issue.title }}" >> $GITHUB_OUTPUT
+        echo "issue_url=${{ github.event.issue.html_url }}" >> $GITHUB_OUTPUT
+        echo "issue_author=${{ github.event.issue.user.login }}" >> $GITHUB_OUTPUT
+        echo "action=${{ github.event.action }}" >> $GITHUB_OUTPUT
+        
+        case "${{ github.event.action }}" in
+          "opened")
+            echo "action_emoji=🆕" >> $GITHUB_OUTPUT
+            echo "action_text=abierto" >> $GITHUB_OUTPUT
+            ;;
+          "closed")
+            echo "action_emoji=✅" >> $GITHUB_OUTPUT
+            echo "action_text=cerrado" >> $GITHUB_OUTPUT
+            ;;
+          "reopened")
+            echo "action_emoji=🔄" >> $GITHUB_OUTPUT
+            echo "action_text=reabierto" >> $GITHUB_OUTPUT
+            ;;
+        esac
+    
+    - name: Send issue notification
+      if: env.TEAMS_WEBHOOK_URL != ''
+      uses: aliencube/microsoft-teams-actions@v0.8.0
+      with:
+        webhook_uri: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        title: "${{ steps.issue_info.outputs.action_emoji }} Issue #${{ steps.issue_info.outputs.issue_number }} ${{ steps.issue_info.outputs.action_text }}"
+        summary: "Issue ${{ steps.issue_info.outputs.action_text }} en ${{ env.PROJECT_NAME }}"
+        text: |
+          **${{ steps.issue_info.outputs.issue_title }}**
+          
+          **Autor:** ${{ steps.issue_info.outputs.issue_author }}
+          **Acción:** ${{ steps.issue_info.outputs.action_text }}
+          
+          [Ver issue completo](${{ steps.issue_info.outputs.issue_url }})
+        theme_color: "${{ github.event.action == 'opened' && '0078d4' || github.event.action == 'closed' && '107c10' || 'ffaa44' }}"
+
+  # Job para notificaciones de Pull Requests
+  pr-notifications:
+    name: Pull Request Notifications
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Prepare PR information
+      id: pr_info
+      run: |
+        echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+        echo "pr_title=${{ github.event.pull_request.title }}" >> $GITHUB_OUTPUT
+        echo "pr_url=${{ github.event.pull_request.html_url }}" >> $GITHUB_OUTPUT
+        echo "pr_author=${{ github.event.pull_request.user.login }}" >> $GITHUB_OUTPUT
+        echo "action=${{ github.event.action }}" >> $GITHUB_OUTPUT
+        echo "base_branch=${{ github.event.pull_request.base.ref }}" >> $GITHUB_OUTPUT
+        echo "head_branch=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+        
+        case "${{ github.event.action }}" in
+          "opened")
+            echo "action_emoji=📝" >> $GITHUB_OUTPUT
+            echo "action_text=abierto" >> $GITHUB_OUTPUT
+            ;;
+          "closed")
+            if [[ "${{ github.event.pull_request.merged }}" == "true" ]]; then
+              echo "action_emoji=🎉" >> $GITHUB_OUTPUT
+              echo "action_text=fusionado" >> $GITHUB_OUTPUT
+            else
+              echo "action_emoji=❌" >> $GITHUB_OUTPUT
+              echo "action_text=cerrado sin fusionar" >> $GITHUB_OUTPUT
+            fi
+            ;;
+          "reopened")
+            echo "action_emoji=🔄" >> $GITHUB_OUTPUT
+            echo "action_text=reabierto" >> $GITHUB_OUTPUT
+            ;;
+          "synchronize")
+            echo "action_emoji=🔄" >> $GITHUB_OUTPUT
+            echo "action_text="actualizado" >> $GITHUB_OUTPUT
+            ;;
+        esac
+    
+    - name: Send PR notification for important events
+      if: github.event.action == 'opened' || (github.event.action == 'closed' && github.event.pull_request.merged == true)
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        custom_payload: |
+          {
+            "channel": "#pull-requests",
+            "username": "GitHub PR Bot",
+            "icon_emoji": ":git:",
+            "attachments": [
+              {
+                "color": "${{ github.event.action == 'opened' && '#36a64f' || '#ff6b35' }}",
+                "title": "${{ steps.pr_info.outputs.action_emoji }} PR #${{ steps.pr_info.outputs.pr_number }}: ${{ steps.pr_info.outputs.pr_title }}",
+                "title_link": "${{ steps.pr_info.outputs.pr_url }}",
+                "fields": [
+                  {
+                    "title": "Estado",
+                    "value": "${{ steps.pr_info.outputs.action_text }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Autor",
+                    "value": "${{ steps.pr_info.outputs.pr_author }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Rama",
+                    "value": "${{ steps.pr_info.outputs.head_branch }} → ${{ steps.pr_info.outputs.base_branch }}",
+                    "short": false
+                  }
+                ]
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Job para webhook personalizado
+  custom-webhook:
+    name: Custom Webhook Integration
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Send custom webhook
+      if: env.CUSTOM_WEBHOOK_URL != ''
+      run: |
+        curl -X POST \
+          -H "Content-Type: application/json" \
+          -H "User-Agent: GitHub-Actions" \
+          -d '{
+            "event": "push",
+            "repository": "${{ github.repository }}",
+            "ref": "${{ github.ref }}",
+            "sha": "${{ github.sha }}",
+            "actor": "${{ github.actor }}",
+            "timestamp": "${{ github.event.head_commit.timestamp }}",
+            "message": "${{ github.event.head_commit.message }}",
+            "project": "${{ env.PROJECT_NAME }}",
+            "url": "${{ github.event.head_commit.url }}"
+          }' \
+          "${{ secrets.CUSTOM_WEBHOOK_URL }}" || {
+            echo "Failed to send custom webhook"
+            exit 0
+          }
+      env:
+        CUSTOM_WEBHOOK_URL: ${{ secrets.CUSTOM_WEBHOOK_URL }}
+
+  # Job para métricas de actividad
+  activity-metrics:
+    name: Activity Metrics Webhook
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'issues'
+    
+    steps:
+    - name: Collect activity metrics
+      id: metrics
+      run: |
+        # Preparar datos de métricas
+        case "${{ github.event_name }}" in
+          "push")
+            echo "metric_type=commit" >> $GITHUB_OUTPUT
+            echo "metric_value=1" >> $GITHUB_OUTPUT
+            ;;
+          "pull_request")
+            echo "metric_type=pull_request" >> $GITHUB_OUTPUT
+            echo "metric_value=1" >> $GITHUB_OUTPUT
+            ;;
+          "issues")
+            echo "metric_type=issue" >> $GITHUB_OUTPUT
+            echo "metric_value=1" >> $GITHUB_OUTPUT
+            ;;
+        esac
+        
+        echo "timestamp=$(date -u +%s)" >> $GITHUB_OUTPUT
+        echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+    
+    - name: Send metrics to analytics endpoint
+      if: env.ANALYTICS_WEBHOOK_URL != ''
+      run: |
+        curl -X POST \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ secrets.ANALYTICS_TOKEN }}" \
+          -d '{
+            "project": "${{ env.PROJECT_NAME }}",
+            "repository": "${{ github.repository }}",
+            "metric_type": "${{ steps.metrics.outputs.metric_type }}",
+            "metric_value": ${{ steps.metrics.outputs.metric_value }},
+            "timestamp": ${{ steps.metrics.outputs.timestamp }},
+            "date": "${{ steps.metrics.outputs.date }}",
+            "actor": "${{ github.actor }}",
+            "event": "${{ github.event_name }}"
+          }' \
+          "${{ secrets.ANALYTICS_WEBHOOK_URL }}" || {
+            echo "Failed to send analytics data"
+            exit 0
+          }
+      env:
+        ANALYTICS_WEBHOOK_URL: ${{ secrets.ANALYTICS_WEBHOOK_URL }}
+
+---
+
+# Configuración de notificaciones por email
+# .github/workflows/email-notifications.yml
+
+name: "Email Notifications"
+
+on:
+  schedule:
+    # Reporte semanal los lunes a las 9:00 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      report_type:
+        description: 'Type of report to send'
+        required: true
+        default: 'weekly'
+        type: choice
+        options:
+        - weekly
+        - monthly
+        - custom
+
+jobs:
+  weekly-report:
+    name: Weekly Project Report
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event.inputs.report_type == 'weekly'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Generate weekly report
+      id: report
+      run: |
+        # Calcular fechas
+        end_date=$(date -u +%Y-%m-%d)
+        start_date=$(date -u -d '7 days ago' +%Y-%m-%d)
+        
+        echo "start_date=$start_date" >> $GITHUB_OUTPUT
+        echo "end_date=$end_date" >> $GITHUB_OUTPUT
+        
+        # Generar estadísticas de commits
+        commits_count=$(git rev-list --count --since="$start_date" --until="$end_date" HEAD || echo "0")
+        authors_count=$(git shortlog --since="$start_date" --until="$end_date" -sn | wc -l || echo "0")
+        
+        echo "commits_count=$commits_count" >> $GITHUB_OUTPUT
+        echo "authors_count=$authors_count" >> $GITHUB_OUTPUT
+        
+        # Generar lista de commits recientes
+        git log --since="$start_date" --until="$end_date" --pretty=format:"- %s (%an)" --no-merges > recent_commits.txt || echo "Sin commits" > recent_commits.txt
+        
+        # Obtener issues y PRs (requiere API de GitHub)
+        echo "recent_activity=Generated" >> $GITHUB_OUTPUT
+    
+    - name: Get GitHub activity metrics
+      id: github_metrics
+      run: |
+        # Usar API de GitHub para obtener estadísticas
+        api_url="https://api.github.com/repos/${{ github.repository }}"
+        
+        # Issues abiertos en la semana
+        issues_url="${api_url}/issues?state=all&since=${{ steps.report.outputs.start_date }}T00:00:00Z"
+        open_issues=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$issues_url" | jq '. | length' || echo "0")
+        
+        # PRs de la semana
+        prs_url="${api_url}/pulls?state=all&since=${{ steps.report.outputs.start_date }}T00:00:00Z"
+        pull_requests=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$prs_url" | jq '. | length' || echo "0")
+        
+        echo "open_issues=$open_issues" >> $GITHUB_OUTPUT
+        echo "pull_requests=$pull_requests" >> $GITHUB_OUTPUT
+    
+    - name: Send weekly report email
+      if: env.SENDGRID_API_KEY != ''
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.sendgrid.net
+        server_port: 587
+        username: apikey
+        password: ${{ secrets.SENDGRID_API_KEY }}
+        subject: "📊 Reporte Semanal - ${{ env.PROJECT_NAME }}"
+        to: ${{ secrets.TEAM_EMAIL }}
+        from: "reports@github.com"
+        html_body: |
+          <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .header { background: #0366d6; color: white; padding: 20px; text-align: center; }
+              .content { padding: 20px; }
+              .metric { background: #f6f8fa; padding: 15px; margin: 10px 0; border-radius: 5px; }
+              .metric h3 { margin: 0 0 10px 0; color: #0366d6; }
+              .footer { background: #f6f8fa; padding: 10px; text-align: center; font-size: 12px; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h1>📊 Reporte Semanal</h1>
+              <p>${{ env.PROJECT_NAME }}</p>
+              <p>${{ steps.report.outputs.start_date }} - ${{ steps.report.outputs.end_date }}</p>
+            </div>
+            
+            <div class="content">
+              <h2>Resumen de Actividad</h2>
+              
+              <div class="metric">
+                <h3>💻 Desarrollo</h3>
+                <ul>
+                  <li><strong>Commits:</strong> ${{ steps.report.outputs.commits_count }}</li>
+                  <li><strong>Contribuidores activos:</strong> ${{ steps.report.outputs.authors_count }}</li>
+                  <li><strong>Pull Requests:</strong> ${{ steps.github_metrics.outputs.pull_requests }}</li>
+                </ul>
+              </div>
+              
+              <div class="metric">
+                <h3>🐛 Issues</h3>
+                <ul>
+                  <li><strong>Issues de la semana:</strong> ${{ steps.github_metrics.outputs.open_issues }}</li>
+                </ul>
+              </div>
+              
+              <div class="metric">
+                <h3>📝 Commits Recientes</h3>
+                <pre style="background: white; padding: 10px; border: 1px solid #ddd;">$(cat recent_commits.txt | head -10)</pre>
+              </div>
+              
+              <div class="metric">
+                <h3>🔗 Enlaces Útiles</h3>
+                <ul>
+                  <li><a href="https://github.com/${{ github.repository }}">Repositorio</a></li>
+                  <li><a href="https://github.com/${{ github.repository }}/actions">GitHub Actions</a></li>
+                  <li><a href="https://github.com/${{ github.repository }}/pulse">Pulse</a></li>
+                </ul>
+              </div>
+            </div>
+            
+            <div class="footer">
+              <p>Reporte generado automáticamente por GitHub Actions</p>
+              <p>${{ env.PROJECT_NAME }} - $(date -u)</p>
+            </div>
+          </body>
+          </html>
+      env:
+        SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+        PROJECT_NAME: "Simulador Predictivo de Impacto Financiero"
+
+---
+
+# Configuración de alertas de seguridad
+# .github/workflows/security-alerts.yml
+
+name: "Security Alerts"
+
+on:
+  schedule:
+    # Verificar vulnerabilidades diariamente a las 6:00 AM UTC
+    - cron: '0 6 * * *'
+  push:
+    branches: [ main ]
+    paths: [ 'requirements.txt', 'setup.py', 'pyproject.toml' ]
+
+jobs:
+  security-scan:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install safety bandit semgrep-cli
+    
+    - name: Run safety check
+      id: safety
+      run: |
+        safety check --json --output safety_report.json || true
+        
+        # Contar vulnerabilidades
+        vuln_count=$(python -c "
+        import json
+        try:
+            with open('safety_report.json', 'r') as f:
+                data = json.load(f)
+            print(len(data) if isinstance(data, list) else 0)
+        except:
+            print('0')
+        ")
+        
+        echo "vulnerability_count=$vuln_count" >> $GITHUB_OUTPUT
+        
+        if [ "$vuln_count" -gt "0" ]; then
+          echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+        else
+          echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Send security alert
+      if: steps.safety.outputs.vulnerabilities_found == 'true'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        custom_payload: |
+          {
+            "channel": "#security-alerts",
+            "username": "Security Bot",
+            "icon_emoji": ":warning:",
+            "attachments": [
+              {
+                "color": "danger",
+                "title": "🚨 Vulnerabilidades de Seguridad Detectadas",
+                "fields": [
+                  {
+                    "title": "Repositorio",
+                    "value": "${{ github.repository }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Vulnerabilidades",
+                    "value": "${{ steps.safety.outputs.vulnerability_count }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Acción Requerida",
+                    "value": "Revisar y actualizar dependencias vulnerables",
+                    "short": false
+                  }
+                ],
+                "actions": [
+                  {
+                    "type": "button",
+                    "text": "Ver Detalles",
+                    "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                ]
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    
+    - name: Create security issue
+      if: steps.safety.outputs.vulnerabilities_found == 'true'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const title = `🚨 Vulnerabilidades de seguridad detectadas - ${new Date().toISOString().split('T')[0]}`;
+          const body = `
+          ## Reporte de Vulnerabilidades de Seguridad
+          
+          Se han detectado **${{ steps.safety.outputs.vulnerability_count }}** vulnerabilidades en las dependencias del proyecto.
+          
+          ### Detalles del Escaneo
+          - **Fecha:** ${new Date().toISOString()}
+          - **Herramienta:** Safety
+          - **Commit:** ${{ github.sha }}
+          
+          ### Acción Requerida
+          1. Revisar el reporte completo en los artefactos del workflow
+          2. Actualizar las dependencias vulnerables
+          3. Verificar que las actualizaciones no rompen funcionalidad
+          4. Ejecutar pruebas completas
+          
+          ### Enlaces
+          - [Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          - [Safety Documentation](https://pyup.io/safety/)
+          
+          **Prioridad:** Alta
+          **Etiquetas:** security, dependencies
+          `;
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: title,
+            body: body,
+            labels: ['security', 'high-priority', 'dependencies']
+          });
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-reports
+        path: |
+          safety_report.json

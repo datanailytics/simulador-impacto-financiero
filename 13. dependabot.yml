@@ -1,0 +1,402 @@
+# Configuración de Dependabot para actualizaciones automatizadas
+# .github/dependabot.yml
+
+version: 2
+
+updates:
+  # Dependencias de Python
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Madrid"
+    target-branch: "develop"
+    open-pull-requests-limit: 5
+    
+    reviewers:
+      - "equipo-desarrollo"
+    
+    assignees:
+      - "analista-principal"
+    
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+    
+    labels:
+      - "dependencies"
+      - "automated"
+    
+    # Configuración de versioning
+    versioning-strategy: "increase"
+    
+    # Grupos de dependencias para PRs consolidados
+    groups:
+      production-dependencies:
+        patterns:
+          - "numpy"
+          - "pandas"
+          - "scipy"
+          - "matplotlib"
+          - "plotly"
+        
+      development-dependencies:
+        patterns:
+          - "pytest*"
+          - "black"
+          - "flake8"
+          - "mypy"
+        
+      documentation-dependencies:
+        patterns:
+          - "sphinx*"
+          - "nbsphinx"
+        
+      security-dependencies:
+        patterns:
+          - "bandit"
+          - "safety"
+    
+    # Ignorar ciertas dependencias que requieren revisión manual
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major"]
+      
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]
+        
+      - dependency-name: "pandas"
+        update-types: ["version-update:semver-major"]
+
+  # Dependencias de JavaScript/Node.js (si aplicable)
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:00"
+      timezone: "Europe/Madrid"
+    target-branch: "develop"
+    open-pull-requests-limit: 3
+    
+    commit-message:
+      prefix: "deps(web)"
+      include: "scope"
+    
+    labels:
+      - "dependencies"
+      - "web-interface"
+      - "automated"
+
+  # GitHub Actions workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "first-monday"
+      time: "06:00"
+      timezone: "Europe/Madrid"
+    
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    
+    labels:
+      - "github-actions"
+      - "ci-cd"
+      - "automated"
+
+---
+
+# Configuración de CodeQL para análisis de seguridad
+# .github/workflows/codeql-analysis.yml
+
+name: "CodeQL Security Analysis"
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Ejecutar análisis de seguridad semanalmente los miércoles a las 3:00 AM
+    - cron: '0 3 * * 3'
+
+jobs:
+  analyze:
+    name: Analyze Security Vulnerabilities
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'python', 'javascript' ]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: ${{ matrix.language }}
+        config-file: ./.github/codeql/codeql-config.yml
+
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v2
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
+      with:
+        category: "/language:${{matrix.language}}"
+
+---
+
+# Configuración personalizada de CodeQL
+# .github/codeql/codeql-config.yml
+
+name: "Financial Simulator CodeQL Config"
+
+disable-default-queries: false
+
+queries:
+  - name: security-extended
+    uses: security-extended
+  - name: security-and-quality
+    uses: security-and-quality
+
+query-filters:
+  - exclude:
+      id: py/unused-import
+  - exclude:
+      id: py/similar-function
+
+paths-ignore:
+  - "tests/"
+  - "docs/"
+  - "examples/"
+  - "**/test_*.py"
+  - "**/*_test.py"
+
+paths:
+  - "src/"
+  - "web/"
+
+---
+
+# Workflow de análisis de seguridad adicional
+# .github/workflows/security-scan.yml
+
+name: "Advanced Security Scanning"
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 4 * * 2'
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  bandit-security-scan:
+    name: Bandit Security Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit[toml] safety semgrep
+    
+    - name: Run Bandit security scan
+      run: |
+        bandit -r src/ -f json -o bandit-report.json
+        bandit -r src/ -f txt -o bandit-report.txt
+    
+    - name: Upload Bandit results
+      uses: actions/upload-artifact@v3
+      with:
+        name: bandit-security-report
+        path: bandit-report.*
+    
+    - name: Run Safety check for dependencies
+      run: |
+        safety check --json --output safety-report.json
+        safety check --output safety-report.txt
+    
+    - name: Upload Safety results
+      uses: actions/upload-artifact@v3
+      with:
+        name: safety-dependency-report
+        path: safety-report.*
+
+  semgrep-security-scan:
+    name: Semgrep Security Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Run Semgrep
+      id: semgrep
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: >-
+          p/security-audit
+          p/python
+          p/flask
+        generateSarif: "1"
+    
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: semgrep.sarif
+      if: always()
+
+  docker-security-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Build Docker image
+      run: |
+        cat > Dockerfile << 'EOF'
+        FROM python:3.11-slim
+        
+        WORKDIR /app
+        
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        
+        COPY src/ ./src/
+        COPY config/ ./config/
+        
+        EXPOSE 8000
+        
+        CMD ["python", "-m", "src.core.financial_model"]
+        EOF
+        
+        docker build -t simulador-financiero:latest .
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'simulador-financiero:latest'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  license-compliance:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pip-licenses licensecheck
+        pip install -r requirements.txt
+    
+    - name: Check license compatibility
+      run: |
+        pip-licenses --format=json --output-file=licenses.json
+        pip-licenses --format=csv --output-file=licenses.csv
+        
+        # Verificar licencias problemáticas
+        pip-licenses --fail-on="GPL.*"
+    
+    - name: Upload license report
+      uses: actions/upload-artifact@v3
+      with:
+        name: license-compliance-report
+        path: licenses.*
+
+  secrets-detection:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Run GitLeaks
+      uses: zricethezav/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+    
+    - name: Run TruffleHog
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+        extra_args: --debug --only-verified
+
+---
+
+# Configuración de Bandit
+# .bandit
+
+[bandit]
+exclude_dirs = ["tests", "docs", "examples"]
+skips = ["B101", "B601"]
+
+[bandit.assert_used]
+skips = ["*_test.py", "test_*.py"]
+
+---
+
+# Configuración de Safety
+# .safety-policy.yml
+
+security:
+  # Ignorar vulnerabilidades específicas después de evaluación
+  ignore-vulnerabilities:
+    # Ejemplo: ID de vulnerabilidad que ha sido evaluada como no aplicable
+    # - 39462
+  
+  # Configurar umbrales de severidad
+  continue-on-vulnerability-error: false
+  
+  # Reportes de formato
+  output:
+    format: "json"
+    file: "safety-report.json"

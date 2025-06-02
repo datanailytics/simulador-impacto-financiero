@@ -1,0 +1,520 @@
+# Workflow de recolección de métricas del proyecto
+# .github/workflows/metrics.yml
+
+name: "Project Metrics and Health Monitoring"
+
+on:
+  schedule:
+    # Ejecutar diariamente a las 2:00 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      metric_type:
+        description: 'Type of metrics to collect'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - code-quality
+        - performance
+        - security
+        - documentation
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Job de métricas de calidad de código
+  code-quality-metrics:
+    name: Code Quality Metrics
+    runs-on: ubuntu-latest
+    if: github.event.inputs.metric_type == 'all' || github.event.inputs.metric_type == 'code-quality' || github.event_name == 'schedule'
+    
+    outputs:
+      code_coverage: ${{ steps.coverage.outputs.coverage }}
+      complexity_score: ${{ steps.complexity.outputs.score }}
+      maintainability_index: ${{ steps.maintainability.outputs.index }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install analysis tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov radon xenon lizard
+        pip install -r requirements.txt
+    
+    - name: Calculate code coverage
+      id: coverage
+      run: |
+        mkdir -p config
+        echo '{"simulation_parameters": {"discount_rate": 0.10}}' > config/financial_parameters.json
+        
+        coverage_result=$(pytest tests/ --cov=src --cov-report=json --cov-report=term | grep "Total coverage:" | awk '{print $3}' | sed 's/%//')
+        if [ -z "$coverage_result" ]; then
+          # Fallback: extraer de archivo JSON
+          coverage_result=$(python -c "import json; data=json.load(open('coverage.json')); print(f'{data[\"totals\"][\"percent_covered\"]:.1f}')" 2>/dev/null || echo "0")
+        fi
+        
+        echo "coverage=$coverage_result" >> $GITHUB_OUTPUT
+        echo "Code Coverage: $coverage_result%"
+    
+    - name: Calculate cyclomatic complexity
+      id: complexity
+      run: |
+        complexity_score=$(radon cc src/ -a -s | grep "Average complexity:" | awk '{print $3}' | sed 's/[()]//g')
+        if [ -z "$complexity_score" ]; then
+          complexity_score="0.0"
+        fi
+        
+        echo "score=$complexity_score" >> $GITHUB_OUTPUT
+        echo "Average Complexity: $complexity_score"
+    
+    - name: Calculate maintainability index
+      id: maintainability
+      run: |
+        maintainability_index=$(radon mi src/ -s | grep "src/" | awk '{sum+=$2; count++} END {if(count>0) print sum/count; else print 0}')
+        if [ -z "$maintainability_index" ]; then
+          maintainability_index="0.0"
+        fi
+        
+        echo "index=$maintainability_index" >> $GITHUB_OUTPUT
+        echo "Maintainability Index: $maintainability_index"
+    
+    - name: Generate detailed code metrics report
+      run: |
+        mkdir -p metrics_reports
+        
+        # Reporte de complejidad detallado
+        radon cc src/ -a --json > metrics_reports/complexity.json
+        radon cc src/ -a > metrics_reports/complexity.txt
+        
+        # Reporte de índice de mantenibilidad
+        radon mi src/ --json > metrics_reports/maintainability.json
+        radon mi src/ > metrics_reports/maintainability.txt
+        
+        # Reporte de métricas Halstead
+        radon hal src/ --json > metrics_reports/halstead.json
+        radon hal src/ > metrics_reports/halstead.txt
+        
+        # Reporte de métricas raw
+        radon raw src/ --json > metrics_reports/raw_metrics.json
+        radon raw src/ > metrics_reports/raw_metrics.txt
+    
+    - name: Upload metrics artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: code-quality-metrics
+        path: metrics_reports/
+
+  # Job de métricas de rendimiento
+  performance-metrics:
+    name: Performance Metrics
+    runs-on: ubuntu-latest
+    if: github.event.inputs.metric_type == 'all' || github.event.inputs.metric_type == 'performance' || github.event_name == 'schedule'
+    
+    outputs:
+      simulation_time: ${{ steps.benchmark.outputs.simulation_time }}
+      memory_usage: ${{ steps.benchmark.outputs.memory_usage }}
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest-benchmark memory-profiler psutil
+        pip install -r requirements.txt
+    
+    - name: Create performance test configuration
+      run: |
+        mkdir -p config data/examples
+        echo '{"simulation_parameters": {"discount_rate": 0.10, "tax_rate": 0.25, "inflation_rate": 0.03}, "risk_parameters": {"market_volatility": 0.15}}' > config/financial_parameters.json
+        
+        # Crear escenario de prueba
+        cat > data/examples/performance_test.json << 'EOF'
+        {
+          "initial_investment": 1000000,
+          "time_horizon": 5,
+          "revenue_projections": [300000, 350000, 400000, 450000, 500000],
+          "cost_projections": [200000, 220000, 240000, 260000, 280000]
+        }
+        EOF
+    
+    - name: Run performance benchmarks
+      id: benchmark
+      run: |
+        # Crear script de benchmark
+        cat > benchmark_test.py << 'EOF'
+        import time
+        import json
+        import psutil
+        import os
+        from src.core.financial_model import FinancialModel
+        
+        def benchmark_simulation():
+            model = FinancialModel()
+            
+            # Cargar escenario de prueba
+            with open('data/examples/performance_test.json', 'r') as f:
+                scenario = json.load(f)
+            
+            # Medir tiempo de ejecución
+            start_time = time.time()
+            results = model.run_simulation(scenario)
+            end_time = time.time()
+            
+            execution_time = end_time - start_time
+            return execution_time, results
+        
+        def measure_memory_usage():
+            process = psutil.Process(os.getpid())
+            initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+            
+            # Ejecutar simulación
+            execution_time, results = benchmark_simulation()
+            
+            final_memory = process.memory_info().rss / 1024 / 1024  # MB
+            memory_used = final_memory - initial_memory
+            
+            return execution_time, memory_used
+        
+        # Ejecutar múltiples iteraciones para promedio
+        times = []
+        memory_usages = []
+        
+        for i in range(10):
+            exec_time, memory_usage = measure_memory_usage()
+            times.append(exec_time)
+            memory_usages.append(memory_usage)
+        
+        avg_time = sum(times) / len(times)
+        avg_memory = sum(memory_usages) / len(memory_usages)
+        
+        print(f"Average simulation time: {avg_time:.3f} seconds")
+        print(f"Average memory usage: {avg_memory:.2f} MB")
+        
+        # Escribir resultados para GitHub Actions
+        with open('performance_results.txt', 'w') as f:
+            f.write(f"simulation_time={avg_time:.3f}\n")
+            f.write(f"memory_usage={avg_memory:.2f}\n")
+        EOF
+        
+        python benchmark_test.py
+        
+        # Leer resultados
+        simulation_time=$(grep "simulation_time=" performance_results.txt | cut -d'=' -f2)
+        memory_usage=$(grep "memory_usage=" performance_results.txt | cut -d'=' -f2)
+        
+        echo "simulation_time=$simulation_time" >> $GITHUB_OUTPUT
+        echo "memory_usage=$memory_usage" >> $GITHUB_OUTPUT
+    
+    - name: Generate performance report
+      run: |
+        mkdir -p metrics_reports
+        
+        cat > metrics_reports/performance_report.md << EOF
+        # Performance Metrics Report
+        
+        **Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        **Commit:** ${{ github.sha }}
+        
+        ## Simulation Performance
+        - **Average Execution Time:** ${{ steps.benchmark.outputs.simulation_time }} seconds
+        - **Average Memory Usage:** ${{ steps.benchmark.outputs.memory_usage }} MB
+        
+        ## Benchmark Configuration
+        - **Test Scenario:** Standard 5-year projection
+        - **Iterations:** 10
+        - **Python Version:** ${{ env.PYTHON_VERSION }}
+        - **Platform:** Ubuntu Latest
+        
+        ## Performance Trends
+        $(if [ -f previous_performance.json ]; then echo "Comparison with previous run available"; else echo "First performance measurement"; fi)
+        EOF
+    
+    - name: Upload performance artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-metrics
+        path: metrics_reports/
+
+  # Job de métricas de seguridad
+  security-metrics:
+    name: Security Metrics
+    runs-on: ubuntu-latest
+    if: github.event.inputs.metric_type == 'all' || github.event.inputs.metric_type == 'security' || github.event_name == 'schedule'
+    
+    outputs:
+      security_score: ${{ steps.security.outputs.score }}
+      vulnerabilities_count: ${{ steps.security.outputs.vulnerabilities }}
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit safety semgrep
+        pip install -r requirements.txt
+    
+    - name: Run security analysis
+      id: security
+      run: |
+        mkdir -p metrics_reports
+        
+        # Bandit analysis
+        bandit -r src/ -f json -o metrics_reports/bandit_results.json || true
+        bandit_issues=$(python -c "
+        import json
+        try:
+            with open('metrics_reports/bandit_results.json', 'r') as f:
+                data = json.load(f)
+            print(len(data.get('results', [])))
+        except:
+            print('0')
+        ")
+        
+        # Safety check
+        safety check --json --output metrics_reports/safety_results.json || true
+        safety_vulns=$(python -c "
+        import json
+        try:
+            with open('metrics_reports/safety_results.json', 'r') as f:
+                data = json.load(f)
+            print(len(data) if isinstance(data, list) else 0)
+        except:
+            print('0')
+        ")
+        
+        # Calculate security score (0-100, higher is better)
+        total_issues=$((bandit_issues + safety_vulns))
+        if [ $total_issues -eq 0 ]; then
+          security_score=100
+        elif [ $total_issues -le 5 ]; then
+          security_score=80
+        elif [ $total_issues -le 10 ]; then
+          security_score=60
+        elif [ $total_issues -le 20 ]; then
+          security_score=40
+        else
+          security_score=20
+        fi
+        
+        echo "score=$security_score" >> $GITHUB_OUTPUT
+        echo "vulnerabilities=$total_issues" >> $GITHUB_OUTPUT
+        
+        echo "Security Score: $security_score/100"
+        echo "Total Issues Found: $total_issues"
+    
+    - name: Upload security metrics
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-metrics
+        path: metrics_reports/
+
+  # Job de métricas de documentación
+  documentation-metrics:
+    name: Documentation Metrics
+    runs-on: ubuntu-latest
+    if: github.event.inputs.metric_type == 'all' || github.event.inputs.metric_type == 'documentation' || github.event_name == 'schedule'
+    
+    outputs:
+      doc_coverage: ${{ steps.documentation.outputs.coverage }}
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install analysis tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install interrogate pydocstyle
+        pip install -r requirements.txt
+    
+    - name: Analyze documentation coverage
+      id: documentation
+      run: |
+        # Usar interrogate para calcular cobertura de docstrings
+        doc_coverage=$(interrogate src/ --quiet --ignore-init-method --ignore-magic | grep "Result:" | awk '{print $2}' | sed 's/%//')
+        
+        if [ -z "$doc_coverage" ]; then
+          doc_coverage="0"
+        fi
+        
+        echo "coverage=$doc_coverage" >> $GITHUB_OUTPUT
+        echo "Documentation Coverage: $doc_coverage%"
+        
+        # Generar reporte detallado
+        mkdir -p metrics_reports
+        interrogate src/ --ignore-init-method --ignore-magic > metrics_reports/documentation_coverage.txt
+        
+        # Verificar estilo de docstrings
+        pydocstyle src/ > metrics_reports/docstring_style.txt 2>&1 || true
+    
+    - name: Upload documentation metrics
+      uses: actions/upload-artifact@v3
+      with:
+        name: documentation-metrics
+        path: metrics_reports/
+
+  # Job de consolidación de métricas
+  consolidate-metrics:
+    name: Consolidate and Report Metrics
+    runs-on: ubuntu-latest
+    needs: [code-quality-metrics, performance-metrics, security-metrics, documentation-metrics]
+    if: always()
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Download all metrics artifacts
+      uses: actions/download-artifact@v3
+    
+    - name: Create consolidated metrics report
+      run: |
+        mkdir -p consolidated_metrics
+        
+        # Crear reporte JSON consolidado
+        cat > consolidated_metrics/project_metrics.json << EOF
+        {
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "commit_hash": "${{ github.sha }}",
+          "branch": "${{ github.ref_name }}",
+          "metrics": {
+            "code_quality": {
+              "coverage": "${{ needs.code-quality-metrics.outputs.code_coverage }}",
+              "complexity": "${{ needs.code-quality-metrics.outputs.complexity_score }}",
+              "maintainability": "${{ needs.code-quality-metrics.outputs.maintainability_index }}"
+            },
+            "performance": {
+              "simulation_time": "${{ needs.performance-metrics.outputs.simulation_time }}",
+              "memory_usage": "${{ needs.performance-metrics.outputs.memory_usage }}"
+            },
+            "security": {
+              "score": "${{ needs.security-metrics.outputs.security_score }}",
+              "vulnerabilities": "${{ needs.security-metrics.outputs.vulnerabilities_count }}"
+            },
+            "documentation": {
+              "coverage": "${{ needs.documentation-metrics.outputs.doc_coverage }}"
+            }
+          }
+        }
+        EOF
+        
+        # Crear reporte en Markdown
+        cat > consolidated_metrics/project_health_report.md << EOF
+        # Project Health Report
+        
+        **Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")  
+        **Commit:** [\`${{{ github.sha:0:7 }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})  
+        **Branch:** ${{ github.ref_name }}
+        
+        ## 📊 Key Metrics Overview
+        
+        | Metric | Value | Status |
+        |--------|-------|--------|
+        | Code Coverage | ${{ needs.code-quality-metrics.outputs.code_coverage }}% | $(if [ "${{ needs.code-quality-metrics.outputs.code_coverage }}" -gt "80" ]; then echo "✅ Good"; elif [ "${{ needs.code-quality-metrics.outputs.code_coverage }}" -gt "60" ]; then echo "⚠️ Fair"; else echo "❌ Poor"; fi) |
+        | Complexity Score | ${{ needs.code-quality-metrics.outputs.complexity_score }} | $(if (( $(echo "${{ needs.code-quality-metrics.outputs.complexity_score }} < 5" | bc -l) )); then echo "✅ Good"; elif (( $(echo "${{ needs.code-quality-metrics.outputs.complexity_score }} < 10" | bc -l) )); then echo "⚠️ Fair"; else echo "❌ High"; fi) |
+        | Security Score | ${{ needs.security-metrics.outputs.security_score }}/100 | $(if [ "${{ needs.security-metrics.outputs.security_score }}" -gt "80" ]; then echo "✅ Excellent"; elif [ "${{ needs.security-metrics.outputs.security_score }}" -gt "60" ]; then echo "⚠️ Good"; else echo "❌ Needs Attention"; fi) |
+        | Doc Coverage | ${{ needs.documentation-metrics.outputs.doc_coverage }}% | $(if [ "${{ needs.documentation-metrics.outputs.doc_coverage }}" -gt "80" ]; then echo "✅ Excellent"; elif [ "${{ needs.documentation-metrics.outputs.doc_coverage }}" -gt "60" ]; then echo "⚠️ Good"; else echo "❌ Needs Improvement"; fi) |
+        | Avg Simulation Time | ${{ needs.performance-metrics.outputs.simulation_time }}s | $(if (( $(echo "${{ needs.performance-metrics.outputs.simulation_time }} < 1" | bc -l) )); then echo "✅ Fast"; elif (( $(echo "${{ needs.performance-metrics.outputs.simulation_time }} < 5" | bc -l) )); then echo "⚠️ Acceptable"; else echo "❌ Slow"; fi) |
+        
+        ## 🎯 Recommendations
+        
+        EOF
+        
+        # Agregar recomendaciones basadas en métricas
+        if [ "${{ needs.code-quality-metrics.outputs.code_coverage }}" -lt "80" ]; then
+          echo "- 📈 **Increase test coverage:** Current coverage is ${{ needs.code-quality-metrics.outputs.code_coverage }}%. Target: 80%+" >> consolidated_metrics/project_health_report.md
+        fi
+        
+        if [ "${{ needs.security-metrics.outputs.vulnerabilities_count }}" -gt "0" ]; then
+          echo "- 🔒 **Address security issues:** ${{ needs.security-metrics.outputs.vulnerabilities_count }} vulnerabilities found" >> consolidated_metrics/project_health_report.md
+        fi
+        
+        if [ "${{ needs.documentation-metrics.outputs.doc_coverage }}" -lt "80" ]; then
+          echo "- 📚 **Improve documentation:** Current doc coverage is ${{ needs.documentation-metrics.outputs.doc_coverage }}%. Target: 80%+" >> consolidated_metrics/project_health_report.md
+        fi
+        
+        echo "" >> consolidated_metrics/project_health_report.md
+        echo "## 📈 Trend Analysis" >> consolidated_metrics/project_health_report.md
+        echo "Historical trend data will be available after multiple runs." >> consolidated_metrics/project_health_report.md
+    
+    - name: Update project health badge
+      run: |
+        # Calcular score general del proyecto (0-100)
+        coverage_score=${{ needs.code-quality-metrics.outputs.code_coverage }}
+        security_score=${{ needs.security-metrics.outputs.security_score }}
+        doc_score=${{ needs.documentation-metrics.outputs.doc_coverage }}
+        
+        # Promedio ponderado
+        overall_score=$(echo "scale=0; ($coverage_score * 0.4 + $security_score * 0.3 + $doc_score * 0.3) / 1" | bc)
+        
+        # Determinar color del badge
+        if [ $overall_score -gt 80 ]; then
+          badge_color="brightgreen"
+          badge_label="excellent"
+        elif [ $overall_score -gt 60 ]; then
+          badge_color="yellow"
+          badge_label="good"
+        else
+          badge_color="red"
+          badge_label="needs-improvement"
+        fi
+        
+        echo "Overall Project Health: $overall_score/100 ($badge_label)"
+        echo "Badge URL: https://img.shields.io/badge/project%20health-$overall_score%25-$badge_color"
+        
+        # Guardar para uso en README
+        echo "project_health_score=$overall_score" >> consolidated_metrics/badge_data.txt
+        echo "project_health_color=$badge_color" >> consolidated_metrics/badge_data.txt
+        echo "project_health_label=$badge_label" >> consolidated_metrics/badge_data.txt
+    
+    - name: Upload consolidated metrics
+      uses: actions/upload-artifact@v3
+      with:
+        name: consolidated-metrics
+        path: consolidated_metrics/
+    
+    - name: Create metrics summary
+      run: |
+        echo "## 📊 Project Metrics Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Metric Category | Score/Value | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------------|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| **Code Coverage** | ${{ needs.code-quality-metrics.outputs.code_coverage }}% | $(if [ "${{ needs.code-quality-metrics.outputs.code_coverage }}" -gt "80" ]; then echo "✅"; else echo "⚠️"; fi) |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Security Score** | ${{ needs.security-metrics.outputs.security_score }}/100 | $(if [ "${{ needs.security-metrics.outputs.security_score }}" -gt "80" ]; then echo "✅"; else echo "⚠️"; fi) |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Documentation** | ${{ needs.documentation-metrics.outputs.doc_coverage }}% | $(if [ "${{ needs.documentation-metrics.outputs.doc_coverage }}" -gt "80" ]; then echo "✅"; else echo "⚠️"; fi) |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Performance** | ${{ needs.performance-metrics.outputs.simulation_time }}s | $(if (( $(echo "${{ needs.performance-metrics.outputs.simulation_time }} < 1" | bc -l) )); then echo "✅"; else echo "⚠️"; fi) |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📋 **Detailed reports available in workflow artifacts**" >> $GITHUB_STEP_SUMMARY

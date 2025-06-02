@@ -1,0 +1,191 @@
+# Simulador Predictivo de Impacto Financiero - .gitignore
+# Configurado para Python, análisis de datos y desarrollo web
+
+# Archivos temporales de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Entornos virtuales
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Archivos de datos sensibles
+*.csv
+*.xlsx
+*.xls
+data/private/
+data/confidential/
+*.db
+*.sqlite
+*.sqlite3
+
+# Archivos de configuración con credenciales
+config/credentials.json
+config/api_keys.json
+config/database.ini
+.env.local
+.env.production
+.env.development
+
+# Reportes y salidas generadas
+reports/private/
+outputs/confidential/
+temp/
+*.pdf
+*.html
+exports/
+
+# Archivos de sistema
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Archivos de IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Archivos de respaldo
+*.bak
+*.backup
+*.tmp
+
+# Archivos de cache de aplicaciones web
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos de dependencias de JavaScript (si aplica)
+package-lock.json
+yarn.lock
+
+# Archivos específicos de análisis financiero
+*.pickle
+*.pkl
+model_cache/
+simulation_cache/
+
+# Archivos de configuración específicos del entorno
+local_settings.py
+instance/
+.webassets-cache
+
+# Archivos de documentación generados
+docs/_build/
+docs/build/
+
+# Archivos de profiling
+*.prof
+
+# Archivos de máquinas específicas
+.vagrant/
+Vagrantfile.local
+
+# Archivos de Docker (si se usan)
+.dockerignore
+Dockerfile.local
+
+# Archivos de bases de datos locales
+*.db-journal
+
+# Archivos de análisis estático
+.bandit
+.flake8
+.pylintrc
+
+# Archivos específicos del proyecto
+config/financial_parameters_local.json
+data/real_data/
+simulations/confidential/
